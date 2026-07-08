@@ -1,4 +1,4 @@
-name = "soledrop"
+name = "shop-soledrop-worker"
 main = "worker.js"
 compatibility_date = "2024-09-23"
 
@@ -10,5 +10,5 @@ APP_USERNAME = "admin"
 
 [[kv_namespaces]]
 binding = "INCIDENT_KV"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
-preview_id = "REPLACE_WITH_YOUR_PREVIEW_KV_NAMESPACE_ID"
+id = "68f6f57e9f2f43bea0117c55d15c25ee"
+preview_id = "68f6f57e9f2f43bea0117c55d15c25ee"
