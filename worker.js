@@ -305,13 +305,26 @@ function productCard(p) {
 }
 
 const STORE_SCRIPTS = `<script>
-  document.addEventListener('click', function(e){
+  document.addEventListener('click', async function(e){
     const b = e.target.closest('[data-act]'); if (!b) return;
     const name = b.getAttribute('data-name') || 'this pair';
     const act = b.getAttribute('data-act');
-    if (act === 'cop')         alert('🔥 Added to cart: ' + name + '\\n\\n(Demo store — checkout is disabled.)');
-    else if (act === 'notify') alert('🔔 We will notify you when ' + name + ' restocks.');
-    else if (act === 'raffle') alert('🎟️ Raffle entry received for ' + name + '. Winners drawn 24h before the drop!');
+    if (act === 'notify') { alert('🔔 We will notify you when ' + name + ' restocks.'); return; }
+    if (act === 'raffle') { alert('🎟️ Raffle entry received for ' + name + '. Winners drawn 24h before the drop!'); return; }
+    if (act === 'cop') {
+      b.disabled = true;
+      try {
+        // add to cart, then place the order — both degrade during an incident
+        const addRes = await fetch('/api/v1/cart', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ item: name, qty: 1 }) });
+        if (!addRes.ok) { const d = await addRes.json().catch(()=>({})); alert('⚠️ ' + (d.message || 'Add to cart is temporarily unavailable. Please try again.')); return; }
+        const coRes = await fetch('/api/v1/checkout', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ item: name, qty: 1 }) });
+        const data = await coRes.json().catch(()=>({}));
+        if (coRes.ok) alert('🔥 Order placed: ' + name + (data.order_id ? '\\n\\nConfirmation ' + data.order_id : '') + '\\n(Demo store — no real charge.)');
+        else alert('⚠️ ' + (data.message || 'Checkout is temporarily unavailable. Please try again.'));
+      } catch (err) {
+        alert('⚠️ Checkout is temporarily unavailable. Please try again shortly.');
+      } finally { b.disabled = false; }
+    }
   });
 </script>`;
 
@@ -923,15 +936,98 @@ function pageAdminGate(incident) {
 
 function pageAdmin(username, incident) {
   return baseLayout({
-    title: 'Admin — SoleDrop',
+    title: 'Order Ops — SoleDrop',
     incident, loggedIn: true, ticker: false,
-    body: `<div style="max-width:900px;margin:0 auto;padding:3rem 1.5rem;">
-      <h1 style="font-size:1.7rem;font-weight:900;text-transform:uppercase;letter-spacing:-0.02em;color:var(--ink);margin-bottom:0.5rem;">Admin Panel</h1>
-      <p style="color:var(--muted);margin-bottom:2rem;">Signed in as <strong style="color:var(--ink);">${esc(username || 'admin')}</strong></p>
-      <div style="background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:1.5rem;box-shadow:var(--shadow-sm);">
-        <p style="color:var(--muted);font-size:0.875rem;">Drop scheduling, inventory, and raffle management. Use the API for programmatic access.</p>
-      </div>
-    </div>`,
+    head: `<style>
+      .ops-wrap{max-width:1000px;margin:0 auto;padding:3rem 1.5rem;}
+      .ops-head{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem;}
+      .ops-head h1{font-size:1.7rem;font-weight:900;text-transform:uppercase;letter-spacing:-0.02em;}
+      .ops-head p{color:var(--muted);font-size:0.85rem;}
+      .ops-status{border-radius:14px;padding:1rem 1.4rem;display:flex;align-items:center;gap:0.8rem;margin-bottom:1.75rem;border:1px solid;font-weight:700;font-size:0.9rem;}
+      .ops-status.ok{background:rgba(18,161,80,0.09);border-color:rgba(18,161,80,0.3);color:#0e7a3d;}
+      .ops-status.bad{background:rgba(229,52,43,0.08);border-color:rgba(229,52,43,0.3);color:#b91c1c;}
+      .ops-status .dot{width:10px;height:10px;border-radius:50%;background:currentColor;flex-shrink:0;}
+      .ops-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1.75rem;}
+      .ops-card{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:1.3rem;box-shadow:var(--shadow-sm);}
+      .ops-card .lbl{font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.4rem;}
+      .ops-card .val{font-size:2rem;font-weight:900;letter-spacing:-0.02em;color:var(--ink);}
+      .ops-card .sub{font-size:0.76rem;color:var(--muted);margin-top:0.2rem;}
+      .ops-card.alert .val{color:var(--bad);}
+      .ops-panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;box-shadow:var(--shadow-sm);overflow:hidden;}
+      .ops-panel h3{font-size:0.8rem;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);padding:1rem 1.25rem;border-bottom:1px solid var(--line-soft);margin:0;}
+      table.ops-tbl{width:100%;border-collapse:collapse;}
+      .ops-tbl td,.ops-tbl th{padding:0.6rem 1.25rem;font-size:0.82rem;text-align:left;border-bottom:1px solid var(--line-soft);}
+      .ops-tbl th{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);font-weight:700;}
+      .ops-tbl td.mono{font-family:'JetBrains Mono',monospace;font-size:0.76rem;}
+      .ops-tbl tr:last-child td{border-bottom:none;}
+      .reason{display:inline-block;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.7rem;font-weight:700;background:rgba(229,52,43,0.12);color:#b91c1c;}
+      .ops-empty{padding:1.75rem 1.25rem;color:var(--muted);font-size:0.85rem;text-align:center;}
+    </style>`,
+    body: `
+<div class="ops-wrap">
+  <div class="ops-head">
+    <div><h1>Order Operations</h1><p>Signed in as ${esc(username || 'admin')} · live checkout &amp; order health</p></div>
+    <span id="ops-updated" style="font-size:0.75rem;color:var(--muted);"></span>
+  </div>
+  <div id="ops-status" class="ops-status ok"><span class="dot"></span><span id="ops-status-text">All systems operational — orders processing normally.</span></div>
+  <div class="ops-grid">
+    <div class="ops-card"><div class="lbl">Orders / min</div><div class="val" id="m-orders">—</div><div class="sub" id="m-orders-sub">last 60s</div></div>
+    <div class="ops-card" id="c-err"><div class="lbl">Checkout error rate</div><div class="val" id="m-err">—</div><div class="sub">last 5 min</div></div>
+    <div class="ops-card" id="c-failed"><div class="lbl">Failed orders (15m)</div><div class="val" id="m-failed">—</div><div class="sub">payment · timeout · inventory</div></div>
+    <div class="ops-card"><div class="lbl">Bots blocked</div><div class="val" id="m-bots">—</div><div class="sub">edge · last 15 min</div></div>
+  </div>
+  <div class="ops-panel">
+    <h3>Failed Orders</h3>
+    <div id="ops-table-wrap"></div>
+  </div>
+</div>`,
+    scripts: `<script>
+  const FAIL_ROWS = [
+    ['SD-48821','Volt Runner OG','carding_declined'],
+    ['SD-48820','Grail High','checkout_timeout'],
+    ['SD-48817','Apex Trail 2','inventory_locked'],
+    ['SD-48815','Volt Runner OG','carding_declined'],
+    ['SD-48812','Pulse Knit','checkout_timeout'],
+    ['SD-48809','Cinder Low','payment_gateway_5xx'],
+    ['SD-48804','Volt Runner OG','inventory_locked'],
+  ];
+  function rnd(min,max){ return Math.floor(min + Math.random()*(max-min+1)); }
+  function render(active){
+    document.getElementById('ops-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    const status = document.getElementById('ops-status');
+    const cErr = document.getElementById('c-err'), cFailed = document.getElementById('c-failed');
+    const wrap = document.getElementById('ops-table-wrap');
+    if (active){
+      status.className = 'ops-status bad';
+      document.getElementById('ops-status-text').textContent = 'Degraded — checkout failing under automated traffic. Mitigation in progress.';
+      document.getElementById('m-orders').textContent = rnd(2,6);
+      document.getElementById('m-orders-sub').textContent = 'down from ~140 baseline';
+      document.getElementById('m-err').textContent = rnd(58,74) + '%';
+      document.getElementById('m-failed').textContent = rnd(180,320);
+      document.getElementById('m-bots').textContent = rnd(9000,15000).toLocaleString();
+      cErr.classList.add('alert'); cFailed.classList.add('alert');
+      const n = rnd(5, FAIL_ROWS.length);
+      let rows = '<table class="ops-tbl"><tr><th>Order</th><th>Item</th><th>Failure</th><th>When</th></tr>';
+      for (let i=0;i<n;i++){ const r=FAIL_ROWS[i]; rows += '<tr><td class="mono">'+r[0]+'</td><td>'+r[1]+'</td><td><span class="reason">'+r[2]+'</span></td><td class="mono">'+rnd(1,59)+'s ago</td></tr>'; }
+      wrap.innerHTML = rows + '</table>';
+    } else {
+      status.className = 'ops-status ok';
+      document.getElementById('ops-status-text').textContent = 'All systems operational — orders processing normally.';
+      document.getElementById('m-orders').textContent = rnd(120,150);
+      document.getElementById('m-orders-sub').textContent = 'last 60s';
+      document.getElementById('m-err').textContent = '0.2%';
+      document.getElementById('m-failed').textContent = '0';
+      document.getElementById('m-bots').textContent = rnd(20,80);
+      cErr.classList.remove('alert'); cFailed.classList.remove('alert');
+      wrap.innerHTML = '<div class="ops-empty">No failed orders — checkout healthy.</div>';
+    }
+  }
+  async function poll(){
+    try { const d = await fetch('/api/incident').then(r=>r.json()); render(!!d.active); } catch(e){}
+    setTimeout(poll, 5000);
+  }
+  poll();
+</script>`,
   });
 }
 
@@ -1033,6 +1129,30 @@ export default {
         })),
         total: PRODUCTS.length,
       });
+    }
+
+    // Cart + checkout — degrade under an active incident (drop-day bot swarm).
+    // Healthy normally; return 503 while the /status incident is active so the
+    // storefront visibly "can't sell" during an attack.
+    if (path === '/api/v1/cart' && method === 'POST') {
+      const incident = await getIncident(env);
+      const body = await request.json().catch(() => ({}));
+      if (incident.active) {
+        return json({ error: 'service_unavailable', code: 503,
+          message: 'Add to cart is temporarily unavailable due to unusually high traffic. Please try again shortly.' }, 503);
+      }
+      return json({ ok: true, cart: { items: 1, item: body.item || null } });
+    }
+
+    if (path === '/api/v1/checkout' && method === 'POST') {
+      const incident = await getIncident(env);
+      const body = await request.json().catch(() => ({}));
+      if (incident.active) {
+        return json({ error: 'checkout_unavailable', code: 503,
+          message: 'Checkout is temporarily unavailable due to unusually high traffic. Your card was not charged — please try again shortly.' }, 503);
+      }
+      const orderId = 'SD-' + (Math.abs(hashCode((body.item || '') + crypto.randomUUID())) % 900000 + 100000);
+      return json({ ok: true, order_id: orderId, item: body.item || null, status: 'confirmed' });
     }
 
     // Back-compat alias — some clients/simulators still hit /api/v1/models.
