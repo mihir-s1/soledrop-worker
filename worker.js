@@ -234,7 +234,7 @@ function baseLayout({ title, head = '', body, scripts = '', incident, loggedIn, 
     </div>` : '';
   const tick = ticker ? `<div class="ticker"><span>🔥 THIS SATURDAY 11:00 AM ET — <b>VOLT RUNNER OG "SOLAR FLARE"</b> &nbsp;•&nbsp; FREE SHIPPING OVER $150 &nbsp;•&nbsp; ONE PAIR PER CUSTOMER &nbsp;•&nbsp; RAFFLE CLOSES FRIDAY 5PM &nbsp;•&nbsp; 🔥 THIS SATURDAY 11:00 AM ET — <b>VOLT RUNNER OG "SOLAR FLARE"</b> &nbsp;•&nbsp; FREE SHIPPING OVER $150 &nbsp;•&nbsp; ONE PAIR PER CUSTOMER &nbsp;•&nbsp; RAFFLE CLOSES FRIDAY 5PM &nbsp;•&nbsp; </span></div>` : '';
   const navAuth = loggedIn
-    ? `<a href="/dashboard">Account</a><a href="/logout">Sign Out</a>`
+    ? `<a href="/admin">Admin</a><a href="/dashboard">Account</a><a href="/logout">Sign Out</a>`
     : `<a href="/login">Sign In</a><a href="/login" class="nav-cta">Join SoleDrop</a>`;
   return `<!DOCTYPE html>
 <html lang="en">
