@@ -234,7 +234,7 @@ function baseLayout({ title, head = '', body, scripts = '', incident, loggedIn, 
     </div>` : '';
   const tick = ticker ? `<div class="ticker"><span>🔥 THIS SATURDAY 11:00 AM ET — <b>VOLT RUNNER OG "SOLAR FLARE"</b> &nbsp;•&nbsp; FREE SHIPPING OVER $150 &nbsp;•&nbsp; ONE PAIR PER CUSTOMER &nbsp;•&nbsp; RAFFLE CLOSES FRIDAY 5PM &nbsp;•&nbsp; 🔥 THIS SATURDAY 11:00 AM ET — <b>VOLT RUNNER OG "SOLAR FLARE"</b> &nbsp;•&nbsp; FREE SHIPPING OVER $150 &nbsp;•&nbsp; ONE PAIR PER CUSTOMER &nbsp;•&nbsp; RAFFLE CLOSES FRIDAY 5PM &nbsp;•&nbsp; </span></div>` : '';
   const navAuth = loggedIn
-    ? `<a href="/admin">Admin</a><a href="/dashboard">Account</a><a href="/logout">Sign Out</a>`
+    ? `<a href="/admin">Admin</a><a href="/admin/incident?action=simulate">Simulate</a><a href="/admin/incident?action=clear">Clear Status</a><a href="/dashboard">Account</a><a href="/logout">Sign Out</a>`
     : `<a href="/login">Sign In</a><a href="/login" class="nav-cta">Join SoleDrop</a>`;
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1112,6 +1112,29 @@ export default {
       if (!loggedIn) return html(pageAdminGate(await getIncident(env)), 401);
       const incident = await getIncident(env);
       return html(pageAdmin(session.u, incident));
+    }
+
+    // Session-authed incident control for the nav bar (demo convenience).
+    // Uses the login session as auth — no INCIDENT_KEY needed/exposed. The
+    // key-gated POST /api/incident below still exists for the attack simulator.
+    if (path === '/admin/incident' && method === 'GET') {
+      if (!loggedIn) return redirect('/login');
+      const action = url.searchParams.get('action');
+      if (action === 'simulate') {
+        await setIncident(env, {
+          active: true,
+          title: 'Drop-Day Bot Swarm Detected',
+          message: 'Automated checkout traffic detected during the drop — mitigation in progress. Real customers may see a waiting room.',
+          severity: 'critical',
+          affected_services: ['Storefront', 'Checkout API', 'Customer Accounts'],
+          started_at: new Date().toISOString(),
+        });
+      } else if (action === 'clear') {
+        await setIncident(env, { ...DEFAULT_INCIDENT });
+      }
+      const ref = request.headers.get('Referer') || '';
+      const back = ref.startsWith(url.origin) ? ref : '/status';
+      return redirect(back);
     }
 
     // ── Healthcheck ─────────────────────────────────────────────────────────
