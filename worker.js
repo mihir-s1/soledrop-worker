@@ -57,6 +57,39 @@ function sneakerSVG(c1, c2, key) {
   </svg>`;
 }
 
+// ── Synthetic customer export data (data-exfil scenario) ──────────────────────
+// Generates a large, deterministic set of fake customer rows so GET
+// /api/v1/customers/export can return a realistic bulk-export payload
+// (response-size anomaly detection target). Nothing here is real PII.
+
+const EXPORT_ROW_COUNT = 8000;
+const EXPORT_CITIES = ['Austin', 'Chicago', 'Denver', 'Miami', 'Seattle', 'Atlanta', 'Portland', 'Phoenix', 'Boston', 'Nashville', 'Dallas', 'San Diego', 'Charlotte', 'Detroit', 'Columbus'];
+const EXPORT_FIRST_NAMES = ['Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey', 'Riley', 'Jamie', 'Cameron', 'Reese', 'Drew', 'Skyler', 'Devon', 'Rowan', 'Sage', 'Kendall'];
+const EXPORT_LAST_NAMES = ['Nguyen', 'Smith', 'Garcia', 'Patel', 'Kim', 'Johnson', 'Martinez', 'Brown', 'Lee', 'Davis', 'Clark', 'Walker', 'Young', 'King', 'Wright'];
+
+function genCustomerExportRows(n = EXPORT_ROW_COUNT) {
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    const first = EXPORT_FIRST_NAMES[i % EXPORT_FIRST_NAMES.length];
+    const last = EXPORT_LAST_NAMES[(i * 7 + 3) % EXPORT_LAST_NAMES.length];
+    rows.push({
+      id: `cus_${(100000 + i).toString(36)}`,
+      name: `${first} ${last}`,
+      email: `${first.toLowerCase()}.${last.toLowerCase()}${i}@example.com`,
+      city: EXPORT_CITIES[i % EXPORT_CITIES.length],
+      card_last4: String(1000 + (i * 37) % 9000).slice(-4),
+      loyalty_points: (i * 13) % 10000,
+    });
+  }
+  return rows;
+}
+
+function customersToCsv(rows) {
+  const header = 'id,name,email,city,card_last4,loyalty_points\n';
+  const body = rows.map(r => `${r.id},${r.name},${r.email},${r.city},${r.card_last4},${r.loyalty_points}`).join('\n');
+  return header + body + '\n';
+}
+
 // ── Utilities ────────────────────────────────────────────────────────────────
 
 function esc(s) {
@@ -84,6 +117,15 @@ function json(data, status = 200) {
 
 function redirect(location, status = 302) {
   return new Response(null, { status, headers: { Location: location } });
+}
+
+// Any non-empty "Authorization: Bearer <token>" counts as authed — this is a
+// mock storefront API, not a real auth server. Used by the exfil-scenario
+// customer-export endpoints alongside the normal session cookie.
+function isBearerAuthed(request) {
+  const auth = request.headers.get('Authorization') || '';
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  return !!(m && m[1] && m[1].trim().length > 0);
 }
 
 // ── Session helpers ──────────────────────────────────────────────────────────
@@ -516,6 +558,90 @@ function pageDrops(incident, loggedIn) {
   <p>Every drop goes live Saturday at 11:00 AM ET. Set your notifications so you never miss a pair.</p>
   ${rows}
 </div>`,
+  });
+}
+
+// ── Page: Search results ─────────────────────────────────────────────────────
+
+function pageSearch(incident, loggedIn, q, file) {
+  const query = q || '';
+  const matches = query
+    ? PRODUCTS.filter(p => p.name.toLowerCase().includes(query.toLowerCase()))
+    : [];
+  const cards = matches.map(productCard).join('');
+  const empty = `<div class="ops-empty" style="padding:3rem 1.5rem;text-align:center;color:var(--muted);">No results for &ldquo;${esc(query)}&rdquo;. Try a different search.</div>`;
+  return baseLayout({
+    title: 'Search — SoleDrop',
+    incident, loggedIn,
+    head: `<style>
+      .shop-wrap{max-width:1200px;margin:0 auto;padding:3rem 1.5rem 1rem;}
+      .shop-head{margin-bottom:1.75rem;}
+      .shop-head h1{font-size:2.2rem;font-weight:900;text-transform:uppercase;letter-spacing:-0.02em;}
+      .shop-head p{color:var(--muted);}
+      .shop-head .filter{font-size:0.78rem;color:var(--muted);margin-top:0.25rem;}
+      .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:1.25rem;}
+      .pc{background:var(--panel);border:1px solid var(--line-soft);border-radius:16px;overflow:hidden;box-shadow:var(--shadow-sm);transition:transform 0.15s,box-shadow 0.15s;}
+      .pc:hover{transform:translateY(-4px);box-shadow:var(--shadow);}
+      .pc-img{position:relative;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;padding:1.25rem;}
+      .pc-shoe{width:82%;filter:drop-shadow(0 8px 10px rgba(0,0,0,0.12));}
+      .pc-badge{position:absolute;top:0.75rem;left:0.75rem;}
+      .pc-body{padding:1rem 1.1rem 1.2rem;}
+      .pc-name{font-weight:800;font-size:1rem;letter-spacing:-0.01em;}
+      .pc-color{color:var(--muted);font-size:0.8rem;margin-bottom:0.15rem;}
+      .pc-price{font-weight:800;font-size:0.95rem;margin:0.4rem 0 0.85rem;}
+    </style>`,
+    body: `
+<div class="shop-wrap">
+  <div class="shop-head">
+    <h1>Search Results</h1>
+    <p>${matches.length} result${matches.length === 1 ? '' : 's'} for &ldquo;${esc(query)}&rdquo;</p>
+    ${file ? `<p class="filter">Filtered by file: ${esc(file)}</p>` : ''}
+  </div>
+  ${matches.length ? `<div class="grid">${cards}</div>` : empty}
+</div>`,
+    scripts: STORE_SCRIPTS,
+  });
+}
+
+// ── Page: Product detail ─────────────────────────────────────────────────────
+
+function pageProductDetail(p, incident, loggedIn) {
+  const btn = p.state === 'soldout'
+    ? `<button class="btn btn-ghost" data-act="notify" data-name="${esc(p.name)}">Notify Me</button>`
+    : p.state === 'raffle'
+      ? `<button class="btn btn-accent" data-act="raffle" data-name="${esc(p.name)}">Enter Raffle</button>`
+      : `<button class="btn btn-primary" data-act="cop" data-name="${esc(p.name)}">Cop · $${p.price}</button>`;
+  return baseLayout({
+    title: `${p.name} — SoleDrop`,
+    incident, loggedIn,
+    head: `<style>
+      .pd-wrap{max-width:1000px;margin:0 auto;padding:3rem 1.5rem;}
+      .pd-crumb{font-size:0.78rem;color:var(--muted);margin-bottom:1.5rem;}
+      .pd-crumb a{color:var(--muted);} .pd-crumb a:hover{color:var(--accent);}
+      .pd-grid{display:grid;grid-template-columns:1fr 1fr;gap:2.5rem;align-items:start;}
+      @media(max-width:720px){.pd-grid{grid-template-columns:1fr;}}
+      .pd-img{aspect-ratio:4/3;border-radius:20px;display:flex;align-items:center;justify-content:center;padding:2rem;}
+      .pd-name{font-size:1.9rem;font-weight:900;text-transform:uppercase;letter-spacing:-0.02em;margin-bottom:0.3rem;}
+      .pd-color{color:var(--muted);margin-bottom:1rem;}
+      .pd-price{font-size:1.5rem;font-weight:800;margin-bottom:1.5rem;}
+      .pd-desc{color:var(--ink2);font-size:0.9rem;line-height:1.7;margin-bottom:1.75rem;}
+    </style>`,
+    body: `
+<div class="pd-wrap">
+  <div class="pd-crumb"><a href="/products">Shop</a> / ${esc(p.name)}</div>
+  <div class="pd-grid">
+    <div class="pd-img" style="background:linear-gradient(135deg,${p.c1}22,${p.c2}33);">${sneakerSVG(p.c1, p.c2, p.id)}</div>
+    <div>
+      ${p.badge ? `<span class="badge badge-accent" style="margin-bottom:0.75rem;">${esc(p.badge)}</span>` : ''}
+      <div class="pd-name">${esc(p.name)}</div>
+      <div class="pd-color">${esc(p.colorway)}</div>
+      <div class="pd-price">$${p.price}</div>
+      <p class="pd-desc">Limited-run release from the SoleDrop catalog. Verified authentic, ships with a scannable authenticity tag, and — like every pair — one per customer.</p>
+      ${btn}
+    </div>
+  </div>
+</div>`,
+    scripts: STORE_SCRIPTS,
   });
 }
 
@@ -1058,9 +1184,47 @@ export default {
       return html(pageProducts(incident, loggedIn));
     }
 
+    // Product detail pages — /products/<id>. Unknown/traversal-style slugs
+    // (e.g. /products/..%2F..%2Fetc%2Fpasswd) simply fall through to 404.
+    if (path.startsWith('/products/') && method === 'GET') {
+      const incident = await getIncident(env);
+      let slug = path.slice('/products/'.length);
+      try { slug = decodeURIComponent(slug); } catch { /* leave raw on bad escapes */ }
+      const product = PRODUCTS.find(p => p.id === slug);
+      if (!product) {
+        return html(baseLayout({
+          title: '404 — SoleDrop', incident, loggedIn, ticker: false,
+          body: `<div style="max-width:500px;margin:6rem auto;padding:0 1.5rem;text-align:center;"><div style="font-size:3rem;font-weight:900;">404</div><h1 style="font-size:1.5rem;font-weight:900;text-transform:uppercase;color:var(--ink);margin-bottom:0.5rem;">Pair not found</h1><p style="color:var(--muted);margin-bottom:1.5rem;">This pair doesn't exist or has been delisted.</p><a href="/products" class="btn btn-accent">Back to Shop</a></div>`,
+        }), 404);
+      }
+      return html(pageProductDetail(product, incident, loggedIn));
+    }
+
     if (path === '/drops' && method === 'GET') {
       const incident = await getIncident(env);
       return html(pageDrops(incident, loggedIn));
+    }
+
+    // Storefront search — real search-results page. The WAF scores
+    // SQLi/XSS/traversal payloads carried in q/file regardless of this
+    // response; the worker just needs to answer like a real search endpoint.
+    if (path === '/search' && method === 'GET') {
+      const incident = await getIncident(env);
+      const q = url.searchParams.get('q') || '';
+      const file = url.searchParams.get('file') || '';
+      return html(pageSearch(incident, loggedIn, q, file));
+    }
+
+    // Product review submission — accepted for moderation, never stored or
+    // reflected raw (stored-XSS simulation target; WAF scores the payload).
+    if (path === '/reviews' && method === 'POST') {
+      const contentType = request.headers.get('Content-Type') || '';
+      if (contentType.includes('application/json')) {
+        await request.json().catch(() => ({}));
+      } else {
+        await request.formData().catch(() => null);
+      }
+      return json({ ok: true, message: 'Review submitted for moderation' });
     }
 
     // ── Auth routes ─────────────────────────────────────────────────────────
@@ -1078,7 +1242,9 @@ export default {
           const cookie = await buildSessionCookie(username, secret);
           return new Response(null, { status: 302, headers: { Location: '/dashboard', 'Set-Cookie': cookie } });
         }
-        return html(pageLogin('Invalid credentials.'));
+        // 401 on failure (not 200) so the credential-stuffing detection's
+        // 401-rate rule fires. Success path above is unchanged.
+        return html(pageLogin('Invalid credentials.'), 401);
       }
     }
 
@@ -1187,13 +1353,46 @@ export default {
       });
     }
 
+    // Mock token auth for the API — issues an opaque bearer token the exfil
+    // scenario calls before pulling data from /api/v1/customers*.
+    if (path === '/api/v1/auth/login' && method === 'POST') {
+      const data = await request.json().catch(() => ({}));
+      const username = (data.username || '').toString();
+      const password = (data.password || '').toString();
+      if (!username || !password) {
+        return json({ error: 'invalid_credentials', code: 401, message: 'Username and password are required.' }, 401);
+      }
+      const token = 'sda_' + btoa(`${username}.${Date.now()}.${crypto.randomUUID()}`).replace(/[^a-zA-Z0-9]/g, '').slice(0, 48);
+      return json({ token, token_type: 'Bearer', expires_in: 3600 });
+    }
+
     if (path === '/api/v1/customers' && method === 'GET') {
-      if (!loggedIn) return json({ error: 'Unauthorized', code: 401, message: 'Valid API key required.' }, 401);
+      if (!loggedIn && !isBearerAuthed(request)) return json({ error: 'Unauthorized', code: 401, message: 'Valid API key required.' }, 401);
       return json({
         customers: [
           { id: 'cus_8f3a2c', email: 'hypebeast@example.com', orders: 12, heat_points: 8400, tier: 'grail' },
           { id: 'cus_4e7b1d', email: 'sneakerfiend@example.com', orders: 3, heat_points: 620, tier: 'member' },
         ],
+      });
+    }
+
+    // Bulk customer export — the data-exfil scenario's target. Returns a
+    // large (~500KB+) body of synthetic rows once authed via bearer token
+    // (from /api/v1/auth/login) or session cookie. Drives the response-size
+    // anomaly / byte-branch detection.
+    if (path === '/api/v1/customers/export' && method === 'GET') {
+      if (!loggedIn && !isBearerAuthed(request)) return json({ error: 'Unauthorized', code: 401, message: 'Valid API key required.' }, 401);
+      const format = (url.searchParams.get('format') || 'csv').toLowerCase();
+      const rows = genCustomerExportRows(EXPORT_ROW_COUNT);
+      if (format === 'json') {
+        return json({ object: 'list', total: rows.length, customers: rows });
+      }
+      return new Response(customersToCsv(rows), {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/csv;charset=UTF-8',
+          'Content-Disposition': 'attachment; filename="customers-export.csv"',
+        },
       });
     }
 
